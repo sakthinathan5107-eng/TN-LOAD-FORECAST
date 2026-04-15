@@ -41,7 +41,7 @@ st.set_page_config(
 GITHUB_USER   = "sakthinathan5107-eng"
 GITHUB_REPO   = "TN-LOAD-FORECAST"
 GITHUB_BRANCH = "main"
-GITHUB_RAW    = (https://github.com/sakthinathan5107-eng/TN-LOAD-FORECAST/edit/main/streamlit_app_rolling.py)
+GITHUB_RAW    = https://github.com/sakthinathan5107-eng/TN-LOAD-FORECAST/edit/main/streamlit_app_rolling.py
 USERS_FILE = "users.json"
 SHARED_DIR = "shared_results"
 os.makedirs(SHARED_DIR, exist_ok=True)
