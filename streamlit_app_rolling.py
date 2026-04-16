@@ -1,34 +1,33 @@
 # ================================================================
-#  TN INTELLIGENT LOAD FORECASTING — STREAMLIT WEB APP  v3.0
+#  TN INTELLIGENT LOAD FORECASTING — STREAMLIT WEB APP
 #  ROLLING 3-MONTH FORECAST: APRIL · MAY · JUNE 2026
 #
-#  FEATURES IN THIS VERSION:
-#    ✅ Monthly Prediction: Bar chart + Line chart (both together)
-#    ✅ Per-month separate sections with daily bar + line graphs
-#    ✅ Day selector → hourly 24h prediction line graph per month
-#    ✅ Month vs Previous Year (2026 vs 2025) comparison
-#    ✅ 5-Year Comparison (2020–2025 actual + 2026 forecast)
-#    ✅ All Results data table with download
-#    ✅ Login / Register / Admin system
-#    ✅ GitHub auto-sync + manual CSV upload fallback
-#    ✅ Historical CSV upload for 5-year analysis
+#  FIXES:
+#    ✓ Hex→RGBA colour conversion bug fixed
+#    ✓ Monthly Graph tab added (new Tab 4)
+#    ✓ Per-month hourly profile chart added
+#    ✓ Weekday vs Weekend bar chart added
+#    ✓ All fillcolor bugs corrected
+#    ✓ Safe column access everywhere
+#    ✓ Better error handling throughout
 #
 #  TABS:
-#    Tab 1 — 📊 Monthly Predictions   ← Bar + Line + per-month detail
-#    Tab 2 — 📅 vs Previous Year      ← 2026 vs 2025
-#    Tab 3 — 📈 5-Year Comparison     ← 2020–2026
-#    Tab 4 — 🎯 Accuracy             ← MAPE / RMSE
-#    Tab 5 — 📋 All Results           ← Full table
-#    Tab 6 — 📖 About
+#    Tab 1 — 📈 Daily Forecast
+#    Tab 2 — 🎯 Accuracy
+#    Tab 3 — 📅 3-Month Combined
+#    Tab 4 — 📊 Monthly Graph      ← NEW
+#    Tab 5 — 📆 Monthly Detail
+#    Tab 6 — 📋 All Results
+#    Tab 7 — 📖 About
 # ================================================================
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+import plotly.express as px
 import hashlib, json, os, calendar, requests
-from datetime import datetime, date
+from datetime import datetime
 from io import StringIO
 
 st.set_page_config(
@@ -37,7 +36,7 @@ st.set_page_config(
     layout="wide",
 )
 
-# ── Constants ─────────────────────────────────────────────────
+# ── Settings ──────────────────────────────────────────────────
 GITHUB_USER   = "sakthinathan5107-eng"
 GITHUB_REPO   = "TN-LOAD-FORECAST"
 GITHUB_BRANCH = "main"
@@ -48,52 +47,21 @@ os.makedirs(SHARED_DIR, exist_ok=True)
 
 LOCAL_RESULTS = os.path.join(SHARED_DIR, "rolling_results.csv")
 LOCAL_HISTORY = os.path.join(SHARED_DIR, "history_updated.csv")
-LOCAL_RAW_CSV = os.path.join(SHARED_DIR, "raw_history.csv")
 
 FORECAST_MONTHS = [(2026, 4), (2026, 5), (2026, 6)]
-MONTH_NAMES     = {4: 'April', 5: 'May', 6: 'June'}
+MONTH_NAMES     = {4: 'April',   5: 'May',     6: 'June'}
 MONTH_COLORS    = {4: '#2563eb', 5: '#16a34a', 6: '#ea580c'}
 
-# 5-year history range (actual data years)
-HISTORY_YEARS   = [2020, 2021, 2022, 2023, 2024, 2025]
-YEAR_COLORS     = {
-    2020: '#94a3b8', 2021: '#64748b',
-    2022: '#f59e0b', 2023: '#8b5cf6',
-    2024: '#06b6d4', 2025: '#ec4899',
-    2026: '#ef4444',   # forecast year
-}
 
-# ── Helpers ───────────────────────────────────────────────────
+# ── Colour helper ─────────────────────────────────────────────
 def hex_to_rgba(hex_color: str, alpha: float = 0.10) -> str:
+    """Convert #rrggbb to rgba(r,g,b,alpha) — fixes original bug."""
     h = hex_color.lstrip('#')
     r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
     return f'rgba({r},{g},{b},{alpha})'
 
-def safe_float(val):
-    try:
-        v = float(val)
-        return None if np.isnan(v) else v
-    except Exception:
-        return None
 
-def get_24hrs(row, prefix):
-    return [safe_float(row.get(f'{prefix}_h{h:02d}')) for h in range(24)]
-
-def hourly_col(row, h):
-    return safe_float(row.get(f'pred_h{h:02d}'))
-
-CHART_LAYOUT = dict(
-    hovermode="x unified",
-    plot_bgcolor="rgba(0,0,0,0)",
-    paper_bgcolor="rgba(0,0,0,0)",
-    legend=dict(orientation="h", yanchor="bottom", y=1.02),
-    yaxis=dict(tickformat=","),
-)
-
-
-# ================================================================
-#  USER SYSTEM
-# ================================================================
+# ── User system ───────────────────────────────────────────────
 def hash_pw(p):
     return hashlib.sha256(p.encode()).hexdigest()
 
@@ -144,9 +112,7 @@ def make_admin(username, secret):
     return True, f"'{match}' is now Admin"
 
 
-# ================================================================
-#  DATA LOADING
-# ================================================================
+# ── Data loading ──────────────────────────────────────────────
 @st.cache_data(ttl=60)
 def fetch_github(filename):
     url = f"{GITHUB_RAW}/{filename}"
@@ -180,16 +146,21 @@ def load_monthly(month_name, year):
         return pd.read_csv(local)
     return None
 
-@st.cache_data(ttl=300)
-def load_raw_history():
-    """Load the original history CSV for 5-year comparison."""
-    if os.path.exists(LOCAL_RAW_CSV):
-        df = pd.read_csv(LOCAL_RAW_CSV)
-        df.columns = [c.strip() for c in df.columns]
-        df['Datetime'] = pd.to_datetime(df['Datetime'], dayfirst=True, errors='coerce')
-        df = df.dropna(subset=['Datetime', 'load']).sort_values('Datetime').reset_index(drop=True)
-        return df
-    return None
+def safe_float(val):
+    try:
+        v = float(val)
+        return None if np.isnan(v) else v
+    except Exception:
+        return None
+
+def get_24hrs(row, prefix):
+    return [safe_float(row.get(f'{prefix}_h{h:02d}'))
+            for h in range(24)]
+
+def hourly_col(row, h):
+    """Get predicted load for hour h from a result row."""
+    v = row.get(f'pred_h{h:02d}')
+    return safe_float(v)
 
 
 # ================================================================
@@ -292,31 +263,17 @@ def show_sidebar(username, role):
 
         st.divider()
 
-        # ── History CSV upload (for 5-year comparison) ────────
-        st.subheader("📂 History Data (5-Year)")
-        st.caption("Upload your Data_2020-2026 CSV for 5-year comparison")
-        raw_file = st.file_uploader(
-            "Data__2020-2026_3rd_month_.csv",
-            type=["csv"], key="raw_hist")
-        if raw_file:
-            raw_df = pd.read_csv(raw_file)
-            raw_df.to_csv(LOCAL_RAW_CSV, index=False)
-            st.cache_data.clear()
-            st.success("✓ History data uploaded!")
-
-        if os.path.exists(LOCAL_RAW_CSV):
-            st.success("✅ History data ready")
-        else:
-            st.info("Upload history CSV to enable 5-year comparison")
-
-        st.divider()
-
         if role == "admin":
-            with st.expander("📂 Forecast Results Upload"):
+            with st.expander("📂 Manual Upload"):
                 rf = st.file_uploader("rolling_results.csv",
                                        type=["csv"], key="ru")
                 if rf:
                     pd.read_csv(rf).to_csv(LOCAL_RESULTS, index=False)
+                    st.success("✓ Uploaded")
+                hf = st.file_uploader("history_updated.csv",
+                                       type=["csv"], key="hu")
+                if hf:
+                    pd.read_csv(hf).to_csv(LOCAL_HISTORY, index=False)
                     st.success("✓ Uploaded")
 
                 for yr, mo in FORECAST_MONTHS:
@@ -340,435 +297,15 @@ def show_sidebar(username, role):
 
 
 # ================================================================
-#  CHART BUILDERS
+#  CHART LAYOUT DEFAULTS
 # ================================================================
-
-def build_monthly_bar_and_line(all_month_data):
-    """
-    Returns TWO figures:
-      fig_bar  — bar chart of monthly avg + peak
-      fig_line — combined daily avg line chart for all months
-    """
-    months_done = [(yr, mo) for yr, mo in FORECAST_MONTHS
-                   if (yr, mo) in all_month_data]
-
-    # ── BAR CHART ─────────────────────────────────────────────
-    m_labels  = [f"{MONTH_NAMES[mo]} {yr}" for yr, mo in months_done]
-    m_avgs    = [all_month_data[k]['predicted_avg'].mean() for k in months_done]
-    m_peaks   = [all_month_data[k]['predicted_peak'].max() for k in months_done]
-    m_colors  = [MONTH_COLORS[mo] for _, mo in months_done]
-
-    fig_bar = go.Figure()
-    fig_bar.add_trace(go.Bar(
-        x=m_labels, y=m_avgs, name="Monthly Avg Load",
-        marker_color=m_colors, opacity=0.85,
-        text=[f"{v:,.0f}" for v in m_avgs],
-        textposition='outside'))
-    fig_bar.add_trace(go.Scatter(
-        x=m_labels, y=m_peaks, name="Monthly Peak Load",
-        mode="markers+lines",
-        marker=dict(size=14, symbol="diamond",
-                    color=m_colors, line=dict(color='white', width=2)),
-        line=dict(color="#ef4444", width=2.5, dash="dot")))
-    fig_bar.update_layout(
-        title="📊 Monthly Avg & Peak Load — April · May · June 2026",
-        yaxis_title="Load (MW)", height=380,
-        yaxis=dict(tickformat=","),
-        plot_bgcolor="rgba(0,0,0,0)",
-        paper_bgcolor="rgba(0,0,0,0)",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02),
-        bargap=0.30)
-
-    # ── LINE CHART ────────────────────────────────────────────
-    fig_line = go.Figure()
-    x_offset = 0
-    x_ticks_vals, x_ticks_text = [], []
-
-    for yr, mo in months_done:
-        mn    = MONTH_NAMES[mo]
-        color = MONTH_COLORS[mo]
-        df_mo = all_month_data[(yr, mo)].sort_values('day')
-        days  = df_mo['day'].tolist()
-        avgs  = df_mo['predicted_avg'].tolist()
-        peaks = df_mo['predicted_peak'].tolist()
-        x     = [x_offset + d for d in days]
-
-        fig_line.add_trace(go.Scatter(
-            x=x, y=avgs, name=f"{mn} Avg",
-            line=dict(color=color, width=2.5),
-            mode="lines+markers", marker=dict(size=4),
-            fill="tozeroy", fillcolor=hex_to_rgba(color, 0.05)))
-        fig_line.add_trace(go.Scatter(
-            x=x, y=peaks, name=f"{mn} Peak",
-            line=dict(color=color, width=1.5, dash="dot"),
-            mode="lines+markers",
-            marker=dict(size=4, symbol="triangle-up"),
-            opacity=0.75))
-
-        # Month label annotation
-        mid_x = x_offset + len(days) / 2
-        fig_line.add_annotation(
-            x=mid_x, y=min(avgs) * 0.98,
-            text=f"<b>{mn}</b>",
-            showarrow=False,
-            font=dict(color=color, size=12))
-        if x_offset > 0:
-            fig_line.add_vline(
-                x=x_offset + 0.5, line_dash="dash",
-                line_color="gray", opacity=0.4)
-
-        # Tick labels at month start
-        x_ticks_vals.append(x_offset + 1)
-        x_ticks_text.append(f"{mn[:3]} 1")
-        x_offset += calendar.monthrange(yr, mo)[1]
-
-    fig_line.update_layout(
-        title="📈 Daily Load Trend — April · May · June 2026 (Avg & Peak)",
-        xaxis_title="Day (Apr 1 → Jun 30)",
-        yaxis_title="Load (MW)", height=400,
-        xaxis=dict(tickmode='array',
-                   tickvals=x_ticks_vals, ticktext=x_ticks_text),
-        **CHART_LAYOUT)
-    return fig_bar, fig_line
-
-
-def build_per_month_detail(yr, mo, df_mo):
-    """
-    Bar chart (daily peak) + Line chart (daily avg) for ONE month.
-    Returns (fig_bar, fig_line).
-    """
-    color = MONTH_COLORS[mo]
-    mn    = MONTH_NAMES[mo]
-    df_mo = df_mo.sort_values('day')
-    days  = df_mo['day'].tolist()
-    avgs  = df_mo['predicted_avg'].tolist()
-    peaks = df_mo['predicted_peak'].tolist()
-
-    # Per-day min from hourly columns
-    mins = []
-    for _, row in df_mo.iterrows():
-        vals = [hourly_col(row, h) for h in range(24)]
-        vals = [v for v in vals if v is not None]
-        mins.append(min(vals) if vals else None)
-
-    # 7-day rolling avg
-    roll7 = pd.Series(avgs).rolling(7, min_periods=1).mean().tolist()
-
-    # ── BAR chart — daily peak ─────────────────────────────────
-    fig_bar = go.Figure()
-    bar_colors = [
-        hex_to_rgba(color, 0.6) if v < max(peaks) else color
-        for v in peaks
-    ]
-    fig_bar.add_trace(go.Bar(
-        x=days, y=peaks, name="Daily Peak Load",
-        marker_color=bar_colors,
-        marker_line_color=color,
-        marker_line_width=1.2))
-    peak_day_i = peaks.index(max(peaks))
-    fig_bar.add_annotation(
-        x=days[peak_day_i], y=max(peaks),
-        text=f"Month Peak<br>{max(peaks):,.0f} MW",
-        showarrow=True, arrowhead=2,
-        arrowcolor=color,
-        font=dict(color=color, size=10),
-        bgcolor="white", bordercolor=color,
-        borderwidth=1.5, ay=-50)
-    fig_bar.update_layout(
-        title=f"📊 {mn} {yr} — Daily Peak Load (Bar Chart)",
-        xaxis_title=f"Day of {mn}",
-        yaxis_title="Peak Load (MW)", height=320,
-        yaxis=dict(tickformat=","),
-        plot_bgcolor="rgba(0,0,0,0)",
-        paper_bgcolor="rgba(0,0,0,0)",
-        xaxis=dict(tickmode='linear', tick0=1, dtick=2))
-
-    # ── LINE chart — daily avg / peak / min ───────────────────
-    fig_line = go.Figure()
-    # Shaded min-peak band
-    if None not in mins:
-        fig_line.add_trace(go.Scatter(
-            x=days + days[::-1],
-            y=peaks + mins[::-1],
-            fill='toself', fillcolor=hex_to_rgba(color, 0.08),
-            line=dict(width=0), name='Min–Peak Band',
-            showlegend=True))
-    fig_line.add_trace(go.Scatter(
-        x=days, y=avgs, name="Daily Avg Load",
-        line=dict(color=color, width=2.5),
-        mode="lines+markers", marker=dict(size=5)))
-    fig_line.add_trace(go.Scatter(
-        x=days, y=peaks, name="Daily Peak",
-        line=dict(color=color, width=1.5, dash="dot"),
-        mode="lines+markers",
-        marker=dict(size=4, symbol="triangle-up")))
-    if None not in mins:
-        fig_line.add_trace(go.Scatter(
-            x=days, y=mins, name="Daily Min",
-            line=dict(color=color, width=1.5, dash="dot"),
-            mode="lines+markers",
-            marker=dict(size=4, symbol="triangle-down")))
-    fig_line.add_trace(go.Scatter(
-        x=days, y=roll7, name="7-Day Rolling Avg",
-        line=dict(color="#dc2626", width=2, dash="dash")))
-    fig_line.update_layout(
-        title=f"📈 {mn} {yr} — Daily Load Trend (Line Chart)",
-        xaxis_title=f"Day of {mn}",
-        yaxis_title="Load (MW)", height=360,
-        xaxis=dict(tickmode='linear', tick0=1, dtick=2),
-        **CHART_LAYOUT)
-    return fig_bar, fig_line
-
-
-def build_hourly_day_chart(yr, mo, day, row):
-    """Line graph for a specific day's 24-hour prediction."""
-    color   = MONTH_COLORS[mo]
-    mn      = MONTH_NAMES[mo]
-    pred    = get_24hrs(row, 'pred')
-    hlabels = [f"{h:02d}:00" for h in range(24)]
-    valid   = [v for v in pred if v is not None]
-
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=hlabels, y=pred,
-        name=f"{mn} {day} Forecast",
-        line=dict(color=color, width=3),
-        mode="lines+markers",
-        marker=dict(size=8, symbol="circle",
-                    line=dict(color="white", width=1.5)),
-        fill="tozeroy", fillcolor=hex_to_rgba(color, 0.10)))
-
-    if valid:
-        ph = pred.index(max(valid))
-        fig.add_annotation(
-            x=hlabels[ph], y=max(valid),
-            text=f"Peak<br>{max(valid):,.0f} MW",
-            showarrow=True, arrowhead=2,
-            arrowcolor=color,
-            font=dict(color=color, size=11),
-            bgcolor="white", bordercolor=color,
-            borderwidth=1.5, ay=-45)
-        min_v = min(valid)
-        pm    = pred.index(min_v)
-        fig.add_annotation(
-            x=hlabels[pm], y=min_v,
-            text=f"Min<br>{min_v:,.0f} MW",
-            showarrow=True, arrowhead=2,
-            arrowcolor="#94a3b8",
-            font=dict(color="#64748b", size=10),
-            bgcolor="white", bordercolor="#94a3b8",
-            borderwidth=1, ay=40)
-
-    avg_v  = safe_float(row.get('predicted_avg')) or (np.mean(valid) if valid else 0)
-    peak_v = safe_float(row.get('predicted_peak')) or (max(valid) if valid else 0)
-
-    fig.update_layout(
-        title=(f"⏱ {mn} {day}, {yr} — Hourly Forecast  |  "
-               f"Avg: {avg_v:,.0f} MW  |  Peak: {peak_v:,.0f} MW"),
-        xaxis_title="Hour of Day",
-        yaxis_title="Load (MW)", height=380,
-        xaxis=dict(tickmode='array',
-                   tickvals=hlabels,
-                   ticktext=hlabels),
-        **CHART_LAYOUT)
-    return fig
-
-
-def build_prev_year_comparison(yr, mo, df_curr, df_raw):
-    """Compare 2026 forecast with 2025 actual (daily + hourly profile)."""
-    color   = MONTH_COLORS[mo]
-    mn      = MONTH_NAMES[mo]
-    prev_yr = yr - 1
-    df_curr = df_curr.sort_values('day')
-
-    curr_days = df_curr['day'].tolist()
-    curr_avgs = df_curr['predicted_avg'].tolist()
-    curr_peaks= df_curr['predicted_peak'].tolist()
-
-    # Previous year from raw history
-    prev_daily_avgs, prev_daily_peaks, prev_days = [], [], []
-    prev_hourly = []
-
-    if df_raw is not None:
-        mask_prev = ((df_raw['Datetime'].dt.year  == prev_yr) &
-                     (df_raw['Datetime'].dt.month == mo))
-        sub_prev  = df_raw[mask_prev].copy()
-        if len(sub_prev) > 0:
-            daily_grp = sub_prev.groupby(sub_prev['Datetime'].dt.day)
-            for day_num, grp in daily_grp:
-                prev_days.append(day_num)
-                prev_daily_avgs.append(grp['load'].mean())
-                prev_daily_peaks.append(grp['load'].max())
-            hp = sub_prev.groupby(sub_prev['Datetime'].dt.hour)['load']\
-                         .mean().sort_index()
-            prev_hourly = hp.tolist()
-
-    # YoY growth
-    n = min(len(curr_avgs), len(prev_daily_avgs))
-    growth = ((np.mean(curr_avgs[:n]) - np.mean(prev_daily_avgs[:n])) /
-              np.mean(prev_daily_avgs[:n]) * 100) if n > 0 else 0
-
-    # ── Combined figure ────────────────────────────────────────
-    fig = make_subplots(
-        rows=2, cols=1,
-        subplot_titles=(
-            f"Daily Avg Load — {mn} {yr} (Forecast) vs {mn} {prev_yr} (Actual)   "
-            f"[YoY Growth: {growth:+.1f}%]",
-            f"Average Hourly Profile — {mn} {yr} vs {mn} {prev_yr}"),
-        vertical_spacing=0.14)
-
-    # Row 1 — Daily avg
-    fig.add_trace(go.Scatter(
-        x=curr_days, y=curr_avgs,
-        name=f"{mn} {yr} Forecast",
-        line=dict(color=color, width=2.5),
-        mode="lines+markers", marker=dict(size=6),
-        fill="tozeroy", fillcolor=hex_to_rgba(color, 0.07)),
-        row=1, col=1)
-    if prev_daily_avgs:
-        fig.add_trace(go.Scatter(
-            x=prev_days, y=prev_daily_avgs,
-            name=f"{mn} {prev_yr} Actual",
-            line=dict(color="#94a3b8", width=2, dash="dash"),
-            mode="lines+markers", marker=dict(size=5)),
-            row=1, col=1)
-
-    # Row 2 — Hourly profile
-    hourly_curr = []
-    for h in range(24):
-        vals = [hourly_col(row, h)
-                for _, row in df_curr.iterrows()]
-        vals = [v for v in vals if v is not None]
-        hourly_curr.append(np.mean(vals) if vals else 0)
-
-    fig.add_trace(go.Scatter(
-        x=list(range(24)), y=hourly_curr,
-        name=f"{mn} {yr} Profile",
-        line=dict(color=color, width=2.5),
-        mode="lines+markers", marker=dict(size=6),
-        fill="tozeroy", fillcolor=hex_to_rgba(color, 0.06)),
-        row=2, col=1)
-    if prev_hourly:
-        fig.add_trace(go.Scatter(
-            x=list(range(24)), y=prev_hourly,
-            name=f"{mn} {prev_yr} Profile",
-            line=dict(color="#94a3b8", width=2, dash="dash"),
-            mode="lines+markers", marker=dict(size=5)),
-            row=2, col=1)
-
-    fig.update_xaxes(
-        tickmode='array',
-        tickvals=list(range(24)),
-        ticktext=[f"{h:02d}:00" for h in range(24)],
-        row=2, col=1)
-    fig.update_yaxes(tickformat=",")
-    fig.update_layout(
-        height=680,
-        hovermode="x unified",
-        plot_bgcolor="rgba(0,0,0,0)",
-        paper_bgcolor="rgba(0,0,0,0)",
-        legend=dict(orientation="h", yanchor="bottom", y=1.04))
-    return fig, growth
-
-
-def build_5year_comparison(mo, all_month_data, df_raw):
-    """
-    Multi-line chart: one line per year (2020–2025 actual + 2026 forecast).
-    Returns (fig_daily, fig_monthly_bar).
-    """
-    mn = MONTH_NAMES[mo]
-
-    # ── Monthly avg bar ────────────────────────────────────────
-    year_avgs  = {}
-    year_peaks = {}
-
-    if df_raw is not None:
-        for yr in HISTORY_YEARS:
-            mask = ((df_raw['Datetime'].dt.year  == yr) &
-                    (df_raw['Datetime'].dt.month == mo))
-            sub  = df_raw[mask]
-            if len(sub) > 0:
-                year_avgs[yr]  = sub['load'].mean()
-                year_peaks[yr] = sub['load'].max()
-
-    # 2026 forecast
-    key_2026 = (2026, mo)
-    if key_2026 in all_month_data and all_month_data[key_2026] is not None:
-        df_f = all_month_data[key_2026]
-        year_avgs[2026]  = df_f['predicted_avg'].mean()
-        year_peaks[2026] = df_f['predicted_peak'].max()
-
-    years  = sorted(year_avgs.keys())
-    avgs   = [year_avgs[y]  for y in years]
-    peaks  = [year_peaks.get(y, 0) for y in years]
-    colors = [YEAR_COLORS.get(y, '#64748b') for y in years]
-
-    fig_bar = go.Figure()
-    fig_bar.add_trace(go.Bar(
-        x=[str(y) for y in years], y=avgs,
-        name="Monthly Avg Load",
-        marker_color=colors, opacity=0.85,
-        text=[f"{v:,.0f}" for v in avgs],
-        textposition='outside'))
-    fig_bar.add_trace(go.Scatter(
-        x=[str(y) for y in years], y=peaks,
-        name="Monthly Peak",
-        mode="markers+lines",
-        marker=dict(size=12, symbol="diamond", color=colors,
-                    line=dict(color='white', width=1.5)),
-        line=dict(color="#ef4444", width=2, dash="dot")))
-    fig_bar.update_layout(
-        title=f"📊 {mn} — Monthly Avg & Peak Load: 6-Year Comparison (2020–2026)",
-        xaxis_title="Year",
-        yaxis_title="Load (MW)", height=370,
-        yaxis=dict(tickformat=","),
-        plot_bgcolor="rgba(0,0,0,0)",
-        paper_bgcolor="rgba(0,0,0,0)",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02))
-
-    # ── Daily trend multi-line ────────────────────────────────
-    fig_daily = go.Figure()
-
-    if df_raw is not None:
-        for yr in HISTORY_YEARS:
-            mask = ((df_raw['Datetime'].dt.year  == yr) &
-                    (df_raw['Datetime'].dt.month == mo))
-            sub  = df_raw[mask].copy()
-            if len(sub) == 0:
-                continue
-            daily = sub.groupby(sub['Datetime'].dt.day)['load'].mean()
-            color_yr = YEAR_COLORS.get(yr, '#64748b')
-            is_last  = (yr == max(HISTORY_YEARS))
-            fig_daily.add_trace(go.Scatter(
-                x=daily.index.tolist(),
-                y=daily.values.tolist(),
-                name=f"{yr} Actual",
-                line=dict(color=color_yr,
-                          width=2.5 if is_last else 1.5,
-                          dash="solid" if is_last else "dot"),
-                mode="lines+markers",
-                marker=dict(size=5 if is_last else 3),
-                opacity=1.0 if is_last else 0.75))
-
-    # 2026 forecast line
-    if key_2026 in all_month_data and all_month_data[key_2026] is not None:
-        df_f = all_month_data[key_2026].sort_values('day')
-        fig_daily.add_trace(go.Scatter(
-            x=df_f['day'].tolist(),
-            y=df_f['predicted_avg'].tolist(),
-            name="2026 Forecast",
-            line=dict(color=MONTH_COLORS[mo], width=3.5),
-            mode="lines+markers",
-            marker=dict(size=7, symbol="diamond"),
-            opacity=1.0))
-
-    fig_daily.update_layout(
-        title=f"📈 {mn} — Daily Avg Load Trend: 6-Year Overlay (2020–2026)",
-        xaxis_title=f"Day of {mn}",
-        yaxis_title="Avg Load (MW)", height=430,
-        xaxis=dict(tickmode='linear', tick0=1, dtick=2),
-        **CHART_LAYOUT)
-    return fig_bar, fig_daily
+CHART_LAYOUT = dict(
+    hovermode="x unified",
+    plot_bgcolor="rgba(0,0,0,0)",
+    paper_bgcolor="rgba(0,0,0,0)",
+    legend=dict(orientation="h", yanchor="bottom", y=1.02),
+    yaxis=dict(tickformat=","),
+)
 
 
 # ================================================================
@@ -779,17 +316,16 @@ def show_dashboard(username, role):
         f"<h2 style='color:#2563eb'>"
         f"⚡ TN Load Forecasting Dashboard</h2>"
         f"<p style='color:#64748b'>"
-        f"Tamil Nadu Power Grid · Rolling LSTM · Welcome <b>{username}</b></p>",
+        f"Tamil Nadu Power Grid · "
+        f"Rolling LSTM · Welcome <b>{username}</b></p>",
         unsafe_allow_html=True)
     st.divider()
 
     df, source = load_results()
-    df_raw     = load_raw_history()
 
     if df is None or len(df) == 0:
-        st.info("### No forecast results yet\n\n"
-                "Run the Colab / local notebook and push to GitHub, "
-                "or upload CSVs via the sidebar.")
+        st.info("### No results yet\n\n"
+                "Run the Colab notebook and push to GitHub.")
         return
 
     if source == "github":
@@ -797,372 +333,637 @@ def show_dashboard(username, role):
     else:
         st.info("📁 Showing manually uploaded results")
 
-    # ── Load per-month data ────────────────────────────────────
-    all_month_data = {}
-    for yr, mo in FORECAST_MONTHS:
-        mn    = MONTH_NAMES[mo]
-        df_mo = load_monthly(mn, yr)
-        if df_mo is not None and len(df_mo) > 0:
-            all_month_data[(yr, mo)] = df_mo
+    df['has_actual'] = df['actual_h00'].apply(
+        lambda x: pd.notna(x) and str(x) not in ['', 'nan', 'None'])
+    df_past   = df[df['has_actual']].copy()
+    df_future = df[~df['has_actual']].copy()
+    df_m      = df_past[df_past['mape'].notna()].copy() \
+                if 'mape' in df_past.columns else pd.DataFrame()
+
+    hours   = list(range(24))
+    hlabels = [f"{h:02d}:00" for h in hours]
 
     # ── KPI cards ─────────────────────────────────────────────
-    df['has_actual'] = df['actual_h00'].apply(
-        lambda x: pd.notna(x) and str(x) not in ['', 'nan', 'None']) \
-        if 'actual_h00' in df.columns else False
-    df_past  = df[df['has_actual']].copy() if 'has_actual' in df.columns else pd.DataFrame()
-    df_m     = df_past[df_past['mape'].notna()].copy() \
-               if ('mape' in df_past.columns and len(df_past) > 0) else pd.DataFrame()
-
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("📅 Total Days Forecast", len(df))
-    c2.metric("📆 Months Forecast", "Apr · May · Jun 2026")
+    c1.metric("📅 Days Predicted", len(df_past))
     if len(df_m) > 0:
-        c3.metric("🎯 Avg MAPE", f"{df_m['mape'].mean():.2f}%")
-        c4.metric("📊 Avg RMSE", f"{df_m['rmse'].mean():.0f} MW")
-    total_months = len(all_month_data)
-    c5.metric("✅ Months Loaded", f"{total_months} / 3")
+        c2.metric("🎯 Avg MAPE",  f"{df_m['mape'].mean():.2f}%")
+        idx = df_m['mape'].idxmin()
+        c3.metric("🏆 Best MAPE",
+                  f"{df_m.loc[idx,'mape']:.2f}%",
+                  str(df_m.loc[idx,'date']),
+                  delta_color="off")
+        c4.metric("📊 Avg RMSE",  f"{df_m['rmse'].mean():.0f} MW")
+    c5.metric("🔮 Months Forecast", "Apr · May · Jun 2026")
     st.divider()
 
-    # ── TABS ──────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-        "📊 Monthly Predictions",
-        "📅 vs Previous Year",
-        "📈 5-Year Comparison",
+    # ── Tabs ──────────────────────────────────────────────────
+    (tab1, tab2, tab3, tab4,
+     tab5, tab6, tab7) = st.tabs([
+        "📈 Daily Forecast",
         "🎯 Accuracy",
+        "📅 3-Month Combined",
+        "📊 Monthly Graph",
+        "📆 Monthly Detail",
         "📋 All Results",
         "📖 About",
     ])
 
-    # ══════════════════════════════════════════════════════════
-    # TAB 1 — MONTHLY PREDICTIONS
-    # ══════════════════════════════════════════════════════════
+    # ══ TAB 1 — DAILY FORECAST ═══════════════════════════════
     with tab1:
-        st.subheader("📊 Monthly Predictions — April · May · June 2026")
+        st.subheader("📊 Today — Predicted vs Actual")
 
-        if not all_month_data:
-            st.info("No monthly data found. Run the notebook and push to GitHub.")
+        if len(df_past) == 0:
+            st.info("No actual data yet")
         else:
-            # ── Overall Bar + Line charts ──────────────────────
-            fig_bar, fig_line = build_monthly_bar_and_line(all_month_data)
-            st.plotly_chart(fig_bar,  use_container_width=True)
-            st.plotly_chart(fig_line, use_container_width=True)
+            row    = df_past.iloc[-1]
+            pred   = get_24hrs(row, 'pred')
+            actual = get_24hrs(row, 'actual')
+            mv     = safe_float(row.get('mape'))
+            rv     = safe_float(row.get('rmse'))
+            vp     = [v for v in pred if v is not None]
 
-            st.divider()
-            st.subheader("📆 Per-Month Breakdown")
-
-            # ── Per-month expanders ────────────────────────────
-            for yr, mo in FORECAST_MONTHS:
-                mn    = MONTH_NAMES[mo]
-                color = MONTH_COLORS[mo]
-
-                if (yr, mo) not in all_month_data:
-                    st.warning(f"No data for {mn} {yr}")
-                    continue
-
-                df_mo    = all_month_data[(yr, mo)].sort_values('day')
-                num_days = calendar.monthrange(yr, mo)[1]
-                avg_load = df_mo['predicted_avg'].mean()
-                peak_load= df_mo['predicted_peak'].max()
-
-                # Colored header for each month
-                st.markdown(
-                    f"<div style='background:{color};color:white;"
-                    f"padding:10px 18px;border-radius:10px;"
-                    f"margin:8px 0 4px 0'>"
-                    f"<b>📅 {mn} {yr}</b> &nbsp;|&nbsp; "
-                    f"{num_days} days &nbsp;|&nbsp; "
-                    f"Avg: {avg_load:,.0f} MW &nbsp;|&nbsp; "
-                    f"Peak: {peak_load:,.0f} MW</div>",
+            m1, m2, m3, m4 = st.columns(4)
+            if mv:
+                col = "green" if mv < 5 else "orange" if mv < 10 else "red"
+                m1.markdown(
+                    f"<h3 style='color:{col}'>{mv:.2f}%</h3>"
+                    f"<p style='color:#64748b;font-size:12px'>MAPE</p>",
                     unsafe_allow_html=True)
+            if rv:
+                m2.markdown(
+                    f"<h3>{rv:.0f} MW</h3>"
+                    f"<p style='color:#64748b;font-size:12px'>RMSE</p>",
+                    unsafe_allow_html=True)
+            if vp:
+                m3.markdown(
+                    f"<h3 style='color:#2563eb'>{max(vp):,.0f} MW</h3>"
+                    f"<p style='color:#64748b;font-size:12px'>Peak</p>",
+                    unsafe_allow_html=True)
+            m4.markdown(
+                f"<h3>{row['date']}</h3>"
+                f"<p style='color:#64748b;font-size:12px'>Date</p>",
+                unsafe_allow_html=True)
 
-                with st.expander(
-                        f"Expand {mn} {yr} — Daily Charts & Day Selector",
-                        expanded=False):
-                    # KPIs
-                    k1, k2, k3, k4 = st.columns(4)
-                    k1.metric("Days", num_days)
-                    k2.metric("Avg Load", f"{avg_load:,.0f} MW")
-                    k3.metric("Peak Load", f"{peak_load:,.0f} MW")
-                    pd_idx    = df_mo['predicted_peak'].idxmax()
-                    peak_day  = df_mo.loc[pd_idx, 'day']
-                    k4.metric("Peak Day", f"{mn} {int(peak_day)}")
+            fig = go.Figure()
+            if any(v is not None for v in actual):
+                fig.add_trace(go.Scatter(
+                    x=hlabels, y=actual, name="Actual",
+                    line=dict(color="#16a34a", width=3),
+                    mode="lines+markers", marker=dict(size=7),
+                    fill="tozeroy",
+                    fillcolor="rgba(22,163,74,0.07)"))
+            fig.add_trace(go.Scatter(
+                x=hlabels, y=pred, name="Predicted",
+                line=dict(color="#2563eb", width=2.5, dash="dash"),
+                mode="lines+markers", marker=dict(size=6)))
+            fig.update_layout(
+                title=f"Daily Forecast — {row['date']}",
+                xaxis_title="Hour", yaxis_title="Load (MW)",
+                height=380, **CHART_LAYOUT)
+            st.plotly_chart(fig, use_container_width=True)
 
-                    # Bar + Line daily charts
-                    fig_b, fig_l = build_per_month_detail(yr, mo, df_mo)
-                    st.plotly_chart(fig_b, use_container_width=True)
-                    st.plotly_chart(fig_l, use_container_width=True)
+        st.divider()
+        st.subheader("🔮 Tomorrow — Next Day Forecast")
 
-                    # ── Day selector → hourly line graph ──────
-                    st.markdown(
-                        f"#### 🔍 Select a Day in {mn} {yr} "
-                        f"to See Hourly Prediction")
-                    sel_day = st.slider(
-                        f"Day of {mn}", 1, num_days, 1,
-                        key=f"day_slider_{mo}")
-                    day_rows = df_mo[df_mo['day'] == sel_day]
+        if len(df_future) > 0:
+            nrow  = df_future.iloc[0]
+            npred = get_24hrs(nrow, 'pred')
+            vnp   = [v for v in npred if v is not None]
 
-                    if len(day_rows) > 0:
-                        row = day_rows.iloc[0]
-                        # Summary cards
-                        d1, d2, d3, d4 = st.columns(4)
-                        avg_v  = safe_float(row.get('predicted_avg'))  or 0
-                        peak_v = safe_float(row.get('predicted_peak')) or 0
-                        pred   = get_24hrs(row, 'pred')
-                        valid  = [v for v in pred if v is not None]
-                        d1.metric("📅 Date",
-                                  str(row.get('date', f"{yr}-{mo:02d}-{sel_day:02d}")))
-                        d2.metric("⚡ Avg Load",  f"{avg_v:,.0f} MW")
-                        d3.metric("🔺 Peak Load", f"{peak_v:,.0f} MW")
-                        d4.metric("🔻 Min Load",
-                                  f"{min(valid):,.0f} MW" if valid else "—")
+            n1, n2, n3, n4 = st.columns(4)
+            if vnp:
+                n1.markdown(
+                    f"<h3 style='color:#ea580c'>{max(vnp):,.0f} MW</h3>"
+                    f"<p style='color:#64748b;font-size:12px'>Peak</p>",
+                    unsafe_allow_html=True)
+                n2.markdown(
+                    f"<h3>{min(vnp):,.0f} MW</h3>"
+                    f"<p style='color:#64748b;font-size:12px'>Min</p>",
+                    unsafe_allow_html=True)
+                n3.markdown(
+                    f"<h3>{np.mean(vnp):,.0f} MW</h3>"
+                    f"<p style='color:#64748b;font-size:12px'>Avg</p>",
+                    unsafe_allow_html=True)
+            n4.markdown(
+                f"<h3 style='color:#7c3aed'>{nrow['date']}</h3>"
+                f"<p style='color:#64748b;font-size:12px'>Date</p>",
+                unsafe_allow_html=True)
 
-                        fig_hourly = build_hourly_day_chart(yr, mo, sel_day, row)
-                        st.plotly_chart(fig_hourly, use_container_width=True)
+            fig2 = go.Figure()
+            fig2.add_trace(go.Scatter(
+                x=hlabels, y=npred, name="Next Day Forecast",
+                line=dict(color="#ea580c", width=3),
+                mode="lines+markers",
+                marker=dict(size=8, symbol="diamond"),
+                fill="tozeroy", fillcolor="rgba(234,88,12,0.07)"))
+            if vnp:
+                ph = npred.index(max(vnp))
+                fig2.add_annotation(
+                    x=hlabels[ph], y=max(vnp),
+                    text=f"Peak: {max(vnp):,.0f} MW",
+                    showarrow=True, arrowhead=2,
+                    arrowcolor="#ea580c",
+                    font=dict(color="#ea580c", size=11),
+                    bgcolor="white", bordercolor="#ea580c",
+                    borderwidth=1.5, ay=-40)
+            fig2.update_layout(
+                title=f"Tomorrow — {nrow['date']}",
+                xaxis_title="Hour", yaxis_title="Load (MW)",
+                height=380, **CHART_LAYOUT)
+            st.plotly_chart(fig2, use_container_width=True)
 
-                        # Hourly data table
-                        with st.expander("📋 Hourly Data Table"):
-                            hourly_df = pd.DataFrame({
-                                "Hour": [f"{h:02d}:00" for h in range(24)],
-                                "Predicted Load (MW)": [
-                                    round(v, 1) if v else None
-                                    for v in pred
-                                ]
-                            })
-                            st.dataframe(hourly_df, use_container_width=True,
-                                         hide_index=True)
-                    else:
-                        st.info(f"No data for {mn} {sel_day}")
-
-                    # Full month table
-                    with st.expander(f"📋 {mn} {yr} — Full Daily Table"):
-                        show_c = ['day', 'date', 'predicted_avg', 'predicted_peak']
-                        avail  = [c for c in show_c if c in df_mo.columns]
-                        ds     = df_mo[avail].copy()
-                        for c in ['predicted_avg', 'predicted_peak']:
-                            if c in ds.columns:
-                                ds[c] = pd.to_numeric(ds[c], errors='coerce').round(1)
-                        ds.columns = [c.replace('_', ' ').title() for c in ds.columns]
-                        st.dataframe(ds, use_container_width=True, hide_index=True)
-                        st.download_button(
-                            f"⬇ Download {mn} {yr} CSV",
-                            df_mo.to_csv(index=False).encode(),
-                            f"{mn.lower()}_{yr}_results.csv", "text/csv",
-                            use_container_width=True)
-
-    # ══════════════════════════════════════════════════════════
-    # TAB 2 — VS PREVIOUS YEAR
-    # ══════════════════════════════════════════════════════════
+    # ══ TAB 2 — ACCURACY ════════════════════════════════════
     with tab2:
-        st.subheader("📅 2026 Forecast vs 2025 Actual — Month by Month")
-
-        if not all_month_data:
-            st.info("No forecast data loaded yet.")
-        else:
-            sel_prev = st.selectbox(
-                "Select Month to Compare",
-                [f"{MONTH_NAMES[mo]} {yr}" for yr, mo in FORECAST_MONTHS],
-                key="prev_yr_sel")
-            sel_yr2 = int(sel_prev.split()[-1])
-            sel_mo2 = next(mo for mo in MONTH_NAMES
-                           if MONTH_NAMES[mo] == sel_prev.split()[0])
-
-            if (sel_yr2, sel_mo2) not in all_month_data:
-                st.info(f"No forecast data for {sel_prev}.")
-            else:
-                df_mo2   = all_month_data[(sel_yr2, sel_mo2)]
-                fig, growth = build_prev_year_comparison(
-                    sel_yr2, sel_mo2, df_mo2, df_raw)
-
-                # KPI banner
-                mn2 = MONTH_NAMES[sel_mo2]
-                col = MONTH_COLORS[sel_mo2]
-                g_color = "#16a34a" if growth > 0 else "#dc2626"
-                st.markdown(
-                    f"<div style='background:{col}15;border-left:4px solid {col};"
-                    f"padding:10px 16px;border-radius:6px;margin-bottom:10px'>"
-                    f"<b>{mn2} 2026 (Forecast)</b> vs "
-                    f"<b>{mn2} 2025 (Actual)</b> &nbsp;|&nbsp; "
-                    f"YoY Growth: <b style='color:{g_color}'>{growth:+.1f}%</b>"
-                    f"</div>", unsafe_allow_html=True)
-
-                if df_raw is None:
-                    st.warning(
-                        "⚠ Upload the history CSV in the sidebar "
-                        "to see 2025 actual data overlay.")
-
-                st.plotly_chart(fig, use_container_width=True)
-
-            # ── All months summary side-by-side ────────────────
-            st.divider()
-            st.subheader("All Months — Growth vs Previous Year")
-            cols_m = st.columns(3)
-            for i, (yr, mo) in enumerate(FORECAST_MONTHS):
-                mn3   = MONTH_NAMES[mo]
-                color = MONTH_COLORS[mo]
-                if (yr, mo) not in all_month_data:
-                    continue
-                df_mo3 = all_month_data[(yr, mo)]
-                curr_avg = df_mo3['predicted_avg'].mean()
-                prev_avg = None
-                if df_raw is not None:
-                    mask = ((df_raw['Datetime'].dt.year  == yr - 1) &
-                            (df_raw['Datetime'].dt.month == mo))
-                    sub  = df_raw[mask]
-                    if len(sub) > 0:
-                        prev_avg = sub['load'].mean()
-                g_str = (f"{((curr_avg - prev_avg)/prev_avg*100):+.1f}%"
-                         if prev_avg else "N/A")
-                with cols_m[i]:
-                    st.markdown(
-                        f"<div style='background:{color}18;border:1px solid {color};"
-                        f"padding:14px;border-radius:10px;text-align:center'>"
-                        f"<b style='color:{color};font-size:16px'>{mn3} 2026</b><br>"
-                        f"Forecast Avg: <b>{curr_avg:,.0f} MW</b><br>"
-                        f"{'2025 Actual: ' + f'{prev_avg:,.0f} MW' if prev_avg else '2025: N/A'}<br>"
-                        f"YoY: <b>{g_str}</b></div>",
-                        unsafe_allow_html=True)
-
-    # ══════════════════════════════════════════════════════════
-    # TAB 3 — 5-YEAR COMPARISON
-    # ══════════════════════════════════════════════════════════
-    with tab3:
-        st.subheader("📈 5-Year (2020–2026) Load Comparison")
-
-        if df_raw is None:
-            st.warning(
-                "⚠ **Upload the history CSV** (Data__2020-2026_3rd_month_.csv) "
-                "in the sidebar to enable 5-year comparison charts.")
-        else:
-            st.success(
-                f"✅ History data loaded: "
-                f"{df_raw['Datetime'].min().date()} → "
-                f"{df_raw['Datetime'].max().date()}")
-
-        sel_mo3 = st.selectbox(
-            "Select Month for 5-Year Analysis",
-            ["April", "May", "June"],
-            key="yr5_sel")
-        mo3 = next(mo for mo, nm in MONTH_NAMES.items() if nm == sel_mo3)
-
-        # Always show what we can
-        fig_bar5, fig_daily5 = build_5year_comparison(
-            mo3, all_month_data, df_raw)
-
-        st.plotly_chart(fig_bar5,   use_container_width=True)
-        st.plotly_chart(fig_daily5, use_container_width=True)
-
-        # ── Year-over-year table ───────────────────────────────
-        st.subheader(f"{sel_mo3} — Year-Over-Year Summary Table")
-        rows_tbl = []
-        for yr_t in HISTORY_YEARS:
-            row_t = {"Year": yr_t, "Type": "Actual"}
-            if df_raw is not None:
-                mask = ((df_raw['Datetime'].dt.year  == yr_t) &
-                        (df_raw['Datetime'].dt.month == mo3))
-                sub  = df_raw[mask]
-                if len(sub) > 0:
-                    row_t["Avg Load (MW)"]  = round(sub['load'].mean(), 0)
-                    row_t["Peak Load (MW)"] = round(sub['load'].max(),  0)
-                    row_t["Min Load (MW)"]  = round(sub['load'].min(),  0)
-                else:
-                    row_t["Avg Load (MW)"] = row_t["Peak Load (MW)"] = None
-                    row_t["Min Load (MW)"] = None
-            rows_tbl.append(row_t)
-
-        # 2026 forecast row
-        row_2026 = {"Year": 2026, "Type": "Forecast 🔮"}
-        if (2026, mo3) in all_month_data:
-            df_f3 = all_month_data[(2026, mo3)]
-            row_2026["Avg Load (MW)"]  = round(df_f3['predicted_avg'].mean(), 0)
-            row_2026["Peak Load (MW)"] = round(df_f3['predicted_peak'].max(),  0)
-            row_2026["Min Load (MW)"]  = None
-        rows_tbl.append(row_2026)
-
-        tbl_df = pd.DataFrame(rows_tbl)
-        st.dataframe(tbl_df, use_container_width=True, hide_index=True)
-
-    # ══════════════════════════════════════════════════════════
-    # TAB 4 — ACCURACY
-    # ══════════════════════════════════════════════════════════
-    with tab4:
-        st.subheader("🎯 Model Accuracy — MAPE & RMSE")
-
         if len(df_m) == 0:
-            st.info(
-                "No accuracy data yet.\n\n"
-                "Once actual readings are available, the Colab notebook "
-                "will compute MAPE & RMSE and push them to GitHub.")
+            st.info("No accuracy data yet — "
+                    "run the Colab notebook with real actuals.")
         else:
-            c1a, c2a = st.columns(2)
-            with c1a:
-                fm = go.Figure()
-                fm.add_trace(go.Scatter(
-                    x=df_m['date'].tolist(),
-                    y=df_m['mape'].tolist(),
-                    mode="lines+markers",
-                    name="MAPE %",
-                    line=dict(color="#ea580c", width=2.5)))
-                fm.add_hline(
-                    y=df_m['mape'].mean(),
-                    line_dash="dash", line_color="red",
-                    annotation_text=f"Avg: {df_m['mape'].mean():.2f}%")
-                fm.update_layout(
-                    title="MAPE % Over Time",
-                    yaxis_title="MAPE %", height=320,
+            c1, c2 = st.columns(2)
+            with c1:
+                fm = px.line(df_m, x="date", y="mape",
+                             title="MAPE % Over Days",
+                             markers=True,
+                             color_discrete_sequence=["#ea580c"])
+                fm.add_hline(y=df_m['mape'].mean(),
+                             line_dash="dash", line_color="red",
+                             annotation_text=
+                             f"Avg: {df_m['mape'].mean():.2f}%")
+                fm.update_layout(height=320,
                     plot_bgcolor="rgba(0,0,0,0)",
                     paper_bgcolor="rgba(0,0,0,0)")
                 st.plotly_chart(fm, use_container_width=True)
-
-            with c2a:
-                fr = go.Figure()
-                fr.add_trace(go.Scatter(
-                    x=df_m['date'].tolist(),
-                    y=df_m['rmse'].tolist(),
-                    mode="lines+markers",
-                    name="RMSE MW",
-                    line=dict(color="#7c3aed", width=2.5)))
-                fr.add_hline(
-                    y=df_m['rmse'].mean(),
-                    line_dash="dash", line_color="red",
-                    annotation_text=f"Avg: {df_m['rmse'].mean():.0f} MW")
-                fr.update_layout(
-                    title="RMSE (MW) Over Time",
-                    yaxis_title="RMSE (MW)", height=320,
+            with c2:
+                fr = px.line(df_m, x="date", y="rmse",
+                             title="RMSE (MW) Over Days",
+                             markers=True,
+                             color_discrete_sequence=["#7c3aed"])
+                fr.add_hline(y=df_m['rmse'].mean(),
+                             line_dash="dash", line_color="red",
+                             annotation_text=
+                             f"Avg: {df_m['rmse'].mean():.0f} MW")
+                fr.update_layout(height=320,
                     plot_bgcolor="rgba(0,0,0,0)",
                     paper_bgcolor="rgba(0,0,0,0)")
                 st.plotly_chart(fr, use_container_width=True)
 
-    # ══════════════════════════════════════════════════════════
-    # TAB 5 — ALL RESULTS
-    # ══════════════════════════════════════════════════════════
+    # ══ TAB 3 — 3-MONTH COMBINED ════════════════════════════
+    with tab3:
+        st.subheader("📅 April · May · June 2026 — 3-Month Combined Forecast")
+
+        all_month_data = {}
+        for yr, mo in FORECAST_MONTHS:
+            mn    = MONTH_NAMES[mo]
+            df_mo = load_monthly(mn, yr)
+            if df_mo is not None and len(df_mo) > 0:
+                all_month_data[(yr, mo)] = df_mo
+
+        if not all_month_data:
+            st.info("3-month forecast data not found.\n\n"
+                    "Run the Colab notebook and push to GitHub.")
+        else:
+            # ── Combined daily avg line chart ─────────────────
+            fig_comb = go.Figure()
+            x_offset = 0
+            for (yr, mo), df_mo in all_month_data.items():
+                mn    = MONTH_NAMES[mo]
+                color = MONTH_COLORS[mo]
+                df_mo = df_mo.sort_values('day')
+                days_x = [x_offset + d for d in df_mo['day'].tolist()]
+                avgs   = df_mo['predicted_avg'].tolist()
+
+                fig_comb.add_trace(go.Scatter(
+                    x=days_x, y=avgs,
+                    name=f"{mn} {yr}",
+                    line=dict(color=color, width=2.5),
+                    mode="lines+markers",
+                    marker=dict(size=5),
+                    fill="tozeroy",
+                    fillcolor=hex_to_rgba(color, 0.07)))
+                if x_offset > 0:
+                    fig_comb.add_vline(
+                        x=x_offset + 0.5, line_dash="dash",
+                        line_color="gray", opacity=0.5)
+                x_offset += calendar.monthrange(yr, mo)[1]
+
+            fig_comb.update_layout(
+                title="Apr + May + Jun 2026 — Daily Avg Load (MW)",
+                xaxis_title="Day (Apr 1 → Jun 30)",
+                yaxis_title="Avg Load (MW)",
+                height=420, **CHART_LAYOUT)
+            st.plotly_chart(fig_comb, use_container_width=True)
+
+            # ── Monthly comparison bar + peak line ────────────
+            months_done  = list(all_month_data.keys())
+            m_labels     = [f"{MONTH_NAMES[mo]} {yr}"
+                            for yr, mo in months_done]
+            m_avgs       = [all_month_data[k]['predicted_avg'].mean()
+                            for k in months_done]
+            m_peaks      = [all_month_data[k]['predicted_peak'].max()
+                            for k in months_done]
+            m_colors     = [MONTH_COLORS[mo] for _, mo in months_done]
+
+            fig_bar = go.Figure()
+            fig_bar.add_trace(go.Bar(
+                x=m_labels, y=m_avgs, name="Avg Load",
+                marker_color=m_colors, opacity=0.85,
+                text=[f"{v:,.0f}" for v in m_avgs],
+                textposition='outside'))
+            fig_bar.add_trace(go.Scatter(
+                x=m_labels, y=m_peaks, name="Peak Load",
+                mode="markers+lines",
+                marker=dict(size=12, symbol="diamond"),
+                line=dict(color="red", width=2, dash="dot")))
+            fig_bar.update_layout(
+                title="Monthly Comparison — Avg and Peak Load",
+                yaxis_title="Load (MW)", height=350,
+                yaxis=dict(tickformat=","),
+                plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fig_bar, use_container_width=True)
+
+            # ── 3-month summary metrics ───────────────────────
+            st.subheader("3-Month Summary")
+            cols = st.columns(len(months_done))
+            for (yr, mo), col_ui in zip(months_done, cols):
+                mn    = MONTH_NAMES[mo]
+                df_mo = all_month_data[(yr, mo)]
+                col_ui.metric(
+                    f"📅 {mn} {yr}",
+                    f"{df_mo['predicted_avg'].mean():,.0f} MW avg",
+                    f"Peak: {df_mo['predicted_peak'].max():,.0f} MW",
+                    delta_color="off")
+
+    # ══ TAB 4 — MONTHLY GRAPH (NEW) ═════════════════════════
+    with tab4:
+        st.subheader("📊 Monthly Graph — Full Analysis Per Month")
+
+        sel_mo_str = st.selectbox(
+            "Select Month",
+            [f"{MONTH_NAMES[mo]} {yr}" for yr, mo in FORECAST_MONTHS],
+            key="mg_sel")
+
+        sel_yr = int(sel_mo_str.split()[-1])
+        sel_mo = next(mo for mo in MONTH_NAMES
+                      if MONTH_NAMES[mo] == sel_mo_str.split()[0])
+        mn       = MONTH_NAMES[sel_mo]
+        color    = MONTH_COLORS[sel_mo]
+        fc       = hex_to_rgba(color, 0.10)
+        num_days = calendar.monthrange(sel_yr, sel_mo)[1]
+
+        df_mo = load_monthly(mn, sel_yr)
+
+        if df_mo is None or len(df_mo) == 0:
+            st.info(f"No data for {mn} {sel_yr} — "
+                    f"run Colab and push to GitHub.")
+        else:
+            df_mo = df_mo.sort_values('day')
+            days  = df_mo['day'].tolist()
+            avgs  = df_mo['predicted_avg'].tolist()
+            peaks = df_mo['predicted_peak'].tolist()
+
+            # Per-day min load
+            mins = []
+            for _, row in df_mo.iterrows():
+                vals = [hourly_col(row, h) for h in range(24)]
+                vals = [v for v in vals if v is not None]
+                mins.append(min(vals) if vals else None)
+
+            # 7-day rolling avg
+            roll7 = pd.Series(avgs).rolling(7, min_periods=1).mean().tolist()
+
+            # ── KPI cards ─────────────────────────────────────
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("Days", num_days)
+            k2.metric("Avg Load", f"{np.mean(avgs):,.0f} MW")
+            k3.metric("Peak Load", f"{max(peaks):,.0f} MW")
+            peak_day_i = peaks.index(max(peaks))
+            k4.metric("Peak Day", f"{mn} {days[peak_day_i]}, {sel_yr}")
+            st.divider()
+
+            # ── Chart A: Daily Avg / Peak / Min / Rolling ─────
+            st.markdown(f"#### 📈 Daily Load Trend — {mn} {sel_yr}")
+            fig_a = go.Figure()
+            # Min–Peak shaded band
+            fig_a.add_trace(go.Scatter(
+                x=days + days[::-1],
+                y=peaks + (mins[::-1] if None not in mins else peaks[::-1]),
+                fill='toself',
+                fillcolor=hex_to_rgba(color, 0.08),
+                line=dict(width=0),
+                name='Min–Peak Band',
+                showlegend=True))
+            # Avg line
+            fig_a.add_trace(go.Scatter(
+                x=days, y=avgs, name="Avg Load",
+                line=dict(color=color, width=2.5),
+                mode="lines+markers", marker=dict(size=5)))
+            # Peak line
+            fig_a.add_trace(go.Scatter(
+                x=days, y=peaks, name="Peak Load",
+                line=dict(color=color, width=1.5, dash="dot"),
+                mode="lines+markers",
+                marker=dict(size=4, symbol="triangle-up")))
+            # Min line
+            if None not in mins:
+                fig_a.add_trace(go.Scatter(
+                    x=days, y=mins, name="Min Load",
+                    line=dict(color=color, width=1.5, dash="dot"),
+                    mode="lines+markers",
+                    marker=dict(size=4, symbol="triangle-down")))
+            # 7-day rolling avg
+            fig_a.add_trace(go.Scatter(
+                x=days, y=roll7, name="7-Day Rolling Avg",
+                line=dict(color="#dc2626", width=2, dash="dash")))
+            # Peak annotation
+            fig_a.add_annotation(
+                x=days[peak_day_i], y=max(peaks),
+                text=f"Month Peak<br>{max(peaks):,.0f} MW",
+                showarrow=True, arrowhead=2,
+                arrowcolor=color,
+                font=dict(color=color, size=10),
+                bgcolor="white", bordercolor=color,
+                borderwidth=1.5, ay=-50)
+            fig_a.update_layout(
+                xaxis_title=f"Day of {mn}",
+                yaxis_title="Load (MW)",
+                height=380,
+                xaxis=dict(tickmode='linear', tick0=1, dtick=2),
+                **CHART_LAYOUT)
+            st.plotly_chart(fig_a, use_container_width=True)
+
+            # ── Chart B: Average Hourly Profile ──────────────
+            st.markdown(f"#### 🕐 Average Hourly Load Profile — {mn} {sel_yr}")
+            hourly_avgs = []
+            for h in range(24):
+                vals = [hourly_col(row, h)
+                        for _, row in df_mo.iterrows()]
+                vals = [v for v in vals if v is not None]
+                hourly_avgs.append(np.mean(vals) if vals else 0)
+
+            fig_b = go.Figure()
+            fig_b.add_trace(go.Scatter(
+                x=list(range(24)), y=hourly_avgs,
+                name=f"{mn} Avg Profile",
+                line=dict(color=color, width=2.5),
+                mode="lines+markers", marker=dict(size=6),
+                fill="tozeroy", fillcolor=fc))
+            # Annotate evening peak
+            ep_h = hourly_avgs.index(max(hourly_avgs))
+            fig_b.add_annotation(
+                x=ep_h, y=max(hourly_avgs),
+                text=f"Peak Hour<br>{max(hourly_avgs):,.0f} MW",
+                showarrow=True, arrowhead=2,
+                arrowcolor=color,
+                font=dict(color=color, size=10),
+                bgcolor="white", bordercolor=color,
+                borderwidth=1.5, ay=-45)
+            fig_b.update_layout(
+                xaxis_title="Hour of Day",
+                yaxis_title="Avg Load (MW)",
+                height=320,
+                xaxis=dict(
+                    tickmode='array',
+                    tickvals=list(range(24)),
+                    ticktext=[f"{h:02d}:00" for h in range(24)]),
+                **CHART_LAYOUT)
+            st.plotly_chart(fig_b, use_container_width=True)
+
+            # ── Chart C: Weekday vs Weekend ───────────────────
+            st.markdown(f"#### 📊 Weekday vs Weekend Load — {mn} {sel_yr}")
+            wd_avgs, we_avgs = [], []
+            for i, d in enumerate(days):
+                try:
+                    import datetime as dt_mod
+                    dow = dt_mod.date(sel_yr, sel_mo, int(d)).weekday()
+                    if dow >= 5:
+                        we_avgs.append(avgs[i])
+                    else:
+                        wd_avgs.append(avgs[i])
+                except Exception:
+                    pass
+            wd_m = np.mean(wd_avgs) if wd_avgs else 0
+            we_m = np.mean(we_avgs) if we_avgs else 0
+
+            fig_c = go.Figure()
+            fig_c.add_trace(go.Bar(
+                x=['Weekday', 'Weekend'],
+                y=[wd_m, we_m],
+                marker_color=[color, '#94a3b8'],
+                opacity=0.85,
+                text=[f"{wd_m:,.0f} MW", f"{we_m:,.0f} MW"],
+                textposition='outside'))
+            fig_c.update_layout(
+                title=f"Weekday vs Weekend Average Load — {mn} {sel_yr}",
+                yaxis_title="Avg Load (MW)", height=320,
+                yaxis=dict(tickformat=","),
+                plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fig_c, use_container_width=True)
+
+            # ── Month data table ──────────────────────────────
+            with st.expander(f"📋 {mn} {sel_yr} Full Table"):
+                show_cols = ['day', 'date',
+                             'predicted_avg', 'predicted_peak']
+                avail = [c for c in show_cols if c in df_mo.columns]
+                ds    = df_mo[avail].copy()
+                for c in ['predicted_avg', 'predicted_peak']:
+                    if c in ds.columns:
+                        ds[c] = pd.to_numeric(ds[c],
+                            errors='coerce').round(1)
+                ds.columns = [c.replace('_', ' ').title()
+                              for c in ds.columns]
+                st.dataframe(ds, use_container_width=True,
+                             hide_index=True)
+                st.download_button(
+                    f"⬇ Download {mn} {sel_yr} CSV",
+                    df_mo.to_csv(index=False).encode(),
+                    f"{mn.lower()}_{sel_yr}_results.csv",
+                    "text/csv",
+                    use_container_width=True)
+
+    # ══ TAB 5 — MONTHLY DETAIL ══════════════════════════════
     with tab5:
-        st.subheader(f"📋 All Forecast Results — {len(df)} days")
+        st.subheader("📆 Monthly Detail — Forecast vs Previous Year")
 
-        show_cols3 = ['date', 'month_name', 'day',
-                      'predicted_avg', 'predicted_peak']
-        if 'mape' in df.columns:
-            show_cols3 += ['mape', 'rmse']
-        avail3 = [c for c in show_cols3 if c in df.columns]
-        ds3    = df[avail3].copy()
-        for c in ['predicted_avg', 'predicted_peak', 'mape', 'rmse']:
-            if c in ds3.columns:
-                ds3[c] = pd.to_numeric(ds3[c], errors='coerce').round(1)
-        ds3.columns = [c.replace('_', ' ').title() for c in ds3.columns]
-        st.dataframe(ds3, use_container_width=True,
-                     hide_index=True, height=480)
+        sel_month = st.selectbox(
+            "Select Month",
+            [f"{MONTH_NAMES[mo]} {yr}"
+             for yr, mo in FORECAST_MONTHS],
+            key="md_sel")
 
-        col_dl1, col_dl2 = st.columns(2)
-        with col_dl1:
+        sel_yr2 = int(sel_month.split()[-1])
+        sel_mo2 = next(mo for mo in MONTH_NAMES
+                       if MONTH_NAMES[mo] == sel_month.split()[0])
+        mn2       = MONTH_NAMES[sel_mo2]
+        prev_yr   = sel_yr2 - 1
+        color2    = MONTH_COLORS[sel_mo2]
+        num_days2 = calendar.monthrange(sel_yr2, sel_mo2)[1]
+
+        df_mo2 = load_monthly(mn2, sel_yr2)
+
+        if df_mo2 is None or len(df_mo2) == 0:
+            st.info(f"No data for {mn2} {sel_yr2} yet")
+        else:
+            df_mo2 = df_mo2.sort_values('day')
+
+            mc1, mc2, mc3, mc4 = st.columns(4)
+            mc1.metric("Days", len(df_mo2))
+            mc2.metric("Avg Load",
+                f"{df_mo2['predicted_avg'].mean():,.0f} MW")
+            mc3.metric("Peak Load",
+                f"{df_mo2['predicted_peak'].max():,.0f} MW")
+            if 'day' in df_mo2.columns:
+                pd_idx = df_mo2['predicted_peak'].idxmax()
+                peak_day2 = df_mo2.loc[pd_idx, 'day']
+                mc4.metric("Peak Day",
+                    f"{mn2} {int(peak_day2)}, {sel_yr2}")
+            st.divider()
+
+            # Daily avg: this year vs prev year
+            fig_yr = go.Figure()
+            fig_yr.add_trace(go.Scatter(
+                x=df_mo2['day'].tolist(),
+                y=df_mo2['predicted_avg'].tolist(),
+                name=f"{mn2} {sel_yr2} (Forecast)",
+                line=dict(color=color2, width=2.5),
+                mode="lines+markers", marker=dict(size=6),
+                fill="tozeroy",
+                fillcolor=hex_to_rgba(color2, 0.07)))
+
+            df_prev2 = load_monthly(mn2, prev_yr)
+            if df_prev2 is not None and len(df_prev2) > 0:
+                df_prev2 = df_prev2.sort_values('day')
+                y_prev = (df_prev2['actual_avg'].tolist()
+                          if 'actual_avg' in df_prev2.columns
+                          else df_prev2['predicted_avg'].tolist())
+                fig_yr.add_trace(go.Scatter(
+                    x=df_prev2['day'].tolist(), y=y_prev,
+                    name=f"{mn2} {prev_yr} (Prev Year)",
+                    line=dict(color="#94a3b8", width=2, dash="dash"),
+                    mode="lines+markers", marker=dict(size=5)))
+
+            fig_yr.update_layout(
+                title=f"{mn2} {sel_yr2} Forecast — Daily Avg Load",
+                xaxis_title=f"Day of {mn2}",
+                yaxis_title="Avg Load (MW)",
+                height=360,
+                xaxis=dict(tickmode='linear', tick0=1, dtick=1),
+                **CHART_LAYOUT)
+            st.plotly_chart(fig_yr, use_container_width=True)
+
+            # Hourly average profile
+            hourly_a2 = []
+            for h in range(24):
+                vals = [hourly_col(row, h)
+                        for _, row in df_mo2.iterrows()]
+                vals = [v for v in vals if v is not None]
+                hourly_a2.append(np.mean(vals) if vals else 0)
+
+            fig_hr = go.Figure()
+            fig_hr.add_trace(go.Scatter(
+                x=list(range(24)), y=hourly_a2,
+                name=f"{mn2} {sel_yr2} Profile",
+                line=dict(color=color2, width=2.5),
+                mode="lines+markers", marker=dict(size=7),
+                fill="tozeroy",
+                fillcolor=hex_to_rgba(color2, 0.06)))
+            fig_hr.update_layout(
+                title=f"Average Hourly Load Profile — {mn2} {sel_yr2}",
+                xaxis_title="Hour of Day",
+                yaxis_title="Avg Load (MW)",
+                height=320,
+                xaxis=dict(
+                    tickmode='array',
+                    tickvals=list(range(24)),
+                    ticktext=[f"{h:02d}:00" for h in range(24)]),
+                **CHART_LAYOUT)
+            st.plotly_chart(fig_hr, use_container_width=True)
+
+            # Day selector
+            st.subheader(f"View Any Day in {mn2} {sel_yr2}")
+            sel_day = st.slider("Select Day", 1, num_days2, 1)
+            day_row = df_mo2[df_mo2['day'] == sel_day]
+
+            if len(day_row) > 0:
+                r     = day_row.iloc[0]
+                dpred = get_24hrs(r, 'pred')
+                hdates= [f"{h:02d}:00" for h in range(24)]
+
+                fig_d = go.Figure()
+                fig_d.add_trace(go.Scatter(
+                    x=hdates, y=dpred,
+                    name=f"{mn2} {sel_day} Forecast",
+                    line=dict(color=color2, width=2.5),
+                    mode="lines+markers",
+                    marker=dict(size=7, symbol="diamond"),
+                    fill="tozeroy",
+                    fillcolor=hex_to_rgba(color2, 0.07)))
+                vdp = [v for v in dpred if v is not None]
+                if vdp:
+                    ph = dpred.index(max(vdp))
+                    fig_d.add_annotation(
+                        x=hdates[ph], y=max(vdp),
+                        text=f"Peak: {max(vdp):,.0f} MW",
+                        showarrow=True, arrowhead=2,
+                        font=dict(color=color2, size=11),
+                        bgcolor="white", bordercolor=color2,
+                        borderwidth=1.5, ay=-40)
+                avg_v  = safe_float(r.get('predicted_avg')) or 0
+                peak_v = safe_float(r.get('predicted_peak')) or 0
+                fig_d.update_layout(
+                    title=(f"{mn2} {sel_day}, {sel_yr2} — "
+                           f"Hourly Forecast  |  "
+                           f"Avg: {avg_v:,.0f} MW  |  "
+                           f"Peak: {peak_v:,.0f} MW"),
+                    xaxis_title="Hour", yaxis_title="Load (MW)",
+                    height=350, **CHART_LAYOUT)
+                st.plotly_chart(fig_d, use_container_width=True)
+
+            # Full month table
+            st.subheader(f"Full {mn2} {sel_yr2} Table")
+            show_cols2 = ['day','date','predicted_avg','predicted_peak']
+            avail2 = [c for c in show_cols2 if c in df_mo2.columns]
+            ds2    = df_mo2[avail2].copy()
+            for c in ['predicted_avg', 'predicted_peak']:
+                if c in ds2.columns:
+                    ds2[c] = pd.to_numeric(ds2[c],
+                        errors='coerce').round(1)
+            ds2.columns = [c.replace('_', ' ').title()
+                           for c in ds2.columns]
+            st.dataframe(ds2, use_container_width=True,
+                         hide_index=True, height=350)
             st.download_button(
-                "⬇ Download All Results CSV",
-                df.to_csv(index=False).encode(),
-                "TN_all_results.csv", "text/csv",
+                f"⬇ Download {mn2} {sel_yr2} CSV",
+                df_mo2.to_csv(index=False).encode(),
+                f"{mn2.lower()}_{sel_yr2}_results.csv",
+                "text/csv",
                 use_container_width=True)
 
-    # ══════════════════════════════════════════════════════════
-    # TAB 6 — ABOUT
-    # ══════════════════════════════════════════════════════════
+    # ══ TAB 6 — ALL RESULTS ═════════════════════════════════
     with tab6:
+        st.subheader(f"All Results — {len(df)} rows")
+        show_cols3 = ['date','mape','rmse','actual_avg',
+                      'predicted_avg','actual_peak','predicted_peak']
+        avail3 = [c for c in show_cols3 if c in df.columns]
+        ds3    = df[avail3].copy()
+        for c in ['mape','rmse','actual_avg',
+                  'predicted_avg','predicted_peak']:
+            if c in ds3.columns:
+                ds3[c] = pd.to_numeric(ds3[c],
+                    errors='coerce').round(1)
+        ds3.columns = [c.replace('_', ' ').title()
+                       for c in ds3.columns]
+        st.dataframe(ds3, use_container_width=True,
+                     hide_index=True, height=460)
+        st.download_button(
+            "⬇ Download All Results",
+            df.to_csv(index=False).encode(),
+            "TN_all_results.csv", "text/csv",
+            use_container_width=True)
+
+    # ══ TAB 7 — ABOUT ═══════════════════════════════════════
+    with tab7:
         c1, c2 = st.columns(2)
         with c1:
             st.markdown("""
@@ -1190,30 +991,31 @@ def show_dashboard(username, role):
             """)
         with c2:
             st.markdown("""
-### Dashboard Tabs
+### Charts & Tabs
 
 | Tab | Description |
 |-----|-------------|
-| 📊 Monthly Predictions | Bar + Line charts for all 3 months. Per-month expanders with daily bar/line charts and hourly day selector |
-| 📅 vs Previous Year | 2026 forecast vs 2025 actual — daily avg + hourly profile comparison |
-| 📈 5-Year Comparison | 2020–2026 monthly bar + daily multi-line overlay |
-| 🎯 Accuracy | MAPE and RMSE trends (when actuals available) |
-| 📋 All Results | Complete forecast table with download |
+| Daily Forecast | Today vs Tomorrow |
+| Accuracy | MAPE and RMSE trends |
+| 3-Month Combined | Apr+May+Jun together |
+| Monthly Graph | Full per-month analysis |
+| Monthly Detail | Month vs prev year |
+| All Results | Complete data table |
 
-### Per-Month Detail includes
-- Daily peak load bar chart
-- Daily avg/peak/min line chart with 7-day rolling avg
-- Day slider → 24-hour hourly prediction line graph
-- Min/Peak annotations on hourly chart
-- Full hourly data table
-- CSV download per month
+### Monthly Graph includes
+- Daily Avg / Peak / Min trend
+- 7-day rolling average
+- Min–Peak shaded band
+- Avg Hourly Profile (0–23h)
+- Weekday vs Weekend comparison
 
 ### Features (22 total)
 temperature · humidity · rain
-wind10 · **wind100** · radiation
-cloud_cover · hour · month
-day_of_week · is_summer · is_holiday
-load_lag 24/48/168 · rolling_mean · rolling_std
+wind10 · **wind100** (real data)
+radiation · cloud_cover · hour
+month · day_of_week · is_summer
+is_holiday · load_lag 24/48/168
+rolling_mean · rolling_std
             """)
 
 
