@@ -362,7 +362,6 @@ def tab_5year_comparison():
             side='right'
         ),
         height=500,
-        hovermode='x unified',
         **PLOT_LAYOUT
     )
     
