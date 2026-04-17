@@ -29,9 +29,9 @@ st.set_page_config(
 )
 
 # ============ GITHUB CONFIG ============
-GITHUB_USER = "sanjay-engineer"
+GITHUB_USER = "sakthinathan5107-eng"
 GITHUB_REPO = "TN-LOAD-FORECAST"
-GITHUB_RAW = f"https://raw.githubusercontent.com/{GITHUB_USER}/{GITHUB_REPO}/main/results"
+GITHUB_RAW = f"https://github.com/sakthinathan5107-eng/TN-LOAD-FORECAST/edit/main/streamlit_app_rolling.py"
 
 # ============ COLORS & STYLES ============
 MONTH_COLORS = {
