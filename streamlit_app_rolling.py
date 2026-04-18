@@ -353,18 +353,17 @@ def tab_5year_comparison():
     
     # Update layout with secondary y-axis
     fig_comparison.update_layout(
-        title=f"{selected_month} — Load Comparison (2020-2026)",
-        xaxis_title='Year',
-        yaxis_title='Daily Average Load (MW)',
-        yaxis2=dict(
-            title='Peak Load (MW)',
-            overlaying='y',
-            side='right'
-        ),
-        height=500,
-        hovermode='x unified',
-        **PLOT_LAYOUT
-    )
+    title=f'{selected_month} — Load Comparison (2020-2026)',
+    xaxis_title='Year',
+    yaxis_title='Daily Average Load (MW)',
+    yaxis2=dict(
+        title='Peak Load (MW)',
+        overlaying='y',
+        side='right'
+    ),
+    height=500,
+    **PLOT_LAYOUT
+)
     
     st.plotly_chart(fig_comparison, use_container_width=True)
     
