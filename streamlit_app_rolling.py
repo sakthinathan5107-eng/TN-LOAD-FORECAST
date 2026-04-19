@@ -27,7 +27,7 @@ st.set_page_config(
 )
 
 # ── GitHub raw URL base ───────────────────────────────────────
-GITHUB_USER   = "sanjay-engineer"
+GITHUB_USER   = "sakthinathan5107-eng"
 GITHUB_REPO   = "TN-LOAD-FORECAST"
 GITHUB_BRANCH = "main"
 RAW_BASE      = f"https://raw.githubusercontent.com/{GITHUB_USER}/{GITHUB_REPO}/{GITHUB_BRANCH}"
