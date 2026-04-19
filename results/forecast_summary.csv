@@ -1,0 +1,7 @@
+month,days,avg_load_MW,peak_load_MW,min_load_MW,forecast_type
+April,30,17873.4,18960.7,15991.4,With Actual
+May,31,,,,With Actual
+June,30,,,,With Actual
+July,31,,,,Future Forecast
+August,31,,,,Future Forecast
+September,30,,,,Future Forecast
