@@ -382,7 +382,7 @@ def tab_5year_comparison():
     ))
 
     fig_comparison.update_layout(
-        title=f"{selected_month} — Load Comparison (2020-2026)",
+        title=f'{selected_month} — Load Comparison (2020-2026)',
         xaxis_title='Year',
         yaxis_title='Daily Average Load (MW)',
         yaxis2=dict(
