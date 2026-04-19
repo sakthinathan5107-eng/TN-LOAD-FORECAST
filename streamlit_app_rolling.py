@@ -207,7 +207,7 @@ with tab_overview:
                 x=x, y=avgs, name=f"{mn} {yr}",
                 line=dict(color=col, width=2.5),
                 mode='lines+markers', marker=dict(size=4),
-                fill='tozeroy', fillcolor=col.replace('#', 'rgba(') + ',0.08)',
+                fill='tozeroy', fillcolor=hex_to_rgba(col, 0.08),
                 legendgroup=f"{yr}{mo}",
             ), row=1, col=1)
 
