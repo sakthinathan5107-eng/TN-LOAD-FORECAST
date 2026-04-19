@@ -30,7 +30,7 @@ st.set_page_config(
 
 # ============ GITHUB CONFIG ============
 # ✅ FIX: Update these to match your EXACT GitHub username and repo name (case-sensitive)
-GITHUB_USER = "sakthinathan5107-eng"
+GITHUB_USER = "/sakthinathan5107-eng"
 GITHUB_REPO = "TN-LOAD-FORECAST"
 GITHUB_BRANCH = "main"  # ✅ FIX: Change to "master" if your default branch is master
 GITHUB_RAW = f"https://raw.githubusercontent.com/{GITHUB_USER}/{GITHUB_REPO}/{GITHUB_BRANCH}/results"
@@ -388,11 +388,16 @@ def tab_5year_comparison():
         yaxis2=dict(
             title='Peak Load (MW)',
             overlaying='y',
-            side='right'
+            side='right',
+            showgrid=False,
         ),
         height=500,
         hovermode='x unified',
-        **PLOT_LAYOUT
+        template='plotly_white',
+        font=dict(family='Arial, sans-serif', size=12, color='#1f2937'),
+        xaxis=dict(showgrid=True, gridwidth=1, gridcolor='#e5e7eb'),
+        yaxis=dict(showgrid=True, gridwidth=1, gridcolor='#e5e7eb'),
+        margin=dict(l=60, r=60, t=80, b=60),
     )
 
     st.plotly_chart(fig_comparison, use_container_width=True)
